@@ -1,0 +1,20 @@
+# R
+.Rhistory
+.RData
+.Ruserdata
+.Rproj.user/
+
+# komplett ignorieren
+Sonstiges/
+Bayes/
+ML/
+*.html
+
+# STAN komplett MIT aufnehmen (kein Ignore!)
+
+# Saves & Tikz: Inhalte ignorieren, Struktur behalten
+Tikz/*
+
+# aber leere Struktur behalten
+!Tikz/.gitkeep
+.positai

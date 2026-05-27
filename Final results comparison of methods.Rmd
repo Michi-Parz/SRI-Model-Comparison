@@ -1,0 +1,1323 @@
+---
+title: "Evaluation of Sound Reduction Index R Comparison between Maximum Likelihood and Bayes Statistics"
+author: "Michael Parzinger"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = F)
+
+realDataAvailable <- TRUE
+
+library(SoundModeling) # https://github.com/Michi-Parz/SoundModeling
+if (realDataAvailable)
+  library(SoundModelingData)
+library(PupillometryR)
+library(ggridges)
+
+numb_curves <- nrow(sldf)/21
+
+#colorsUsed <- RavenR::ggplotColours(4)
+
+
+
+col_fre <- "#0066cc"
+col_bay <- "#d62728"
+col_mean <- "#000000"
+
+col_vec <- c(col_bay, col_fre,col_mean)
+
+
+```
+
+
+# Important informations
+
+
+In this project, you must add both a folder named *Bayes* and a folder named *ML*.
+
+
+The folder *ML* must contain the projekt https://github.com/Michi-Parz/SRI-Model-MLE
+
+The folder *Bayes* must contain the projekt https://github.com/Michi-Parz/SRI-Model-Bayes
+
+
+
+Otherwise, you will need to update the file paths listed in this document!
+
+
+```{r}
+# Lade Bayes Schätzungen
+
+poster <- readRDS("Bayes/Saves/tvAR/STAN_FixMaxRL_tvAR_max_shift_1")
+exposter <- rstan::extract(poster)
+```
+
+
+```{r}
+# Erzeuge Freq Model
+formu_final <- RpdB ~ soundproofing_measure(
+    eta_int, C, cL, 
+    w_perimeter = u,
+    w_surface = s,
+    freq = fpHz,
+    fce_gamma = gamma,
+    cL1 = 2500,
+    plateau_style = "tau0real",
+    eta_ref = NULL,
+    max_rl = 1.18,
+    max_rl_type = "value"
+  )
+
+
+f_model <- nlsLMcov(formu_final,
+                        sldf,
+                        start = c("eta_int" = 0.02,"C" = 2,"cL" = 1000, "gamma" = 0.77),
+                        cov_type = "tvAR",
+                        lower = c(5/1000, 0,0,0),
+                        maxlag = 1L,
+                        )
+
+```
+
+```{r}
+# Lade Bootstrapp Ziehungen
+bs_para_file <- paste("ML/Saves/BS_para_tvAR", 1,"_maxrlvalue_SpaceSaved", sep = "")
+
+bs_fits <- readRDS(bs_para_file)
+
+bs_coefs <- t(sapply(bs_fits, coefficients))
+bs_coefs <- as.data.frame(bs_coefs)
+```
+
+```{r}
+## Bootstrapp Residuen
+# 
+bs_resid <- lapply(bs_fits, \(x){
+  matrix(sldf$RpdB  - c(x$fitted), ncol = 21, byrow = T)
+  
+  #matrix(x$resid, ncol = 21, byrow = T)
+})
+bs_resid <- abind::abind(bs_resid, rev.along = 3)
+# Standardisiert
+bs_st_resid <- lapply(bs_fits, \(x){
+  cov <- x$cov_matrix
+  weight <- solve(chol(cov))
+
+  res <- (sldf$RpdB  - c(x$fitted)) %*% kronecker(diag(numb_curves),weight)
+  matrix(res, ncol = 21, byrow = T)
+  
+  #matrix(resid(x), ncol = 21, byrow = T)
+})
+bs_st_resid <- abind::abind(bs_st_resid, rev.along = 3)
+```
+
+
+
+
+# Model curves
+
+```{r}
+
+sldf_fit <- sldf
+
+sldf_fit$Mean <- rep(apply(sl_list_stan$y, 2, mean), numb_curves)
+sldf_fit$Frequentist <- f_model$fitted
+sldf_fit$Bayes <- c(t(apply(exposter$SRI, 2:3, mean)))
+
+ggModelCurves <- gg_basic(sldf_fit, aes(x = fpHz, group = Building), ymin = 20, ymax = 80)+
+  geom_point(aes(y = RpdB), color = "grey")+
+  geom_line(aes(y = RpdB), color = "grey", alpha = 1/3)+
+  geom_line(aes(y = Frequentist, color = "Max likelihood"))+
+  geom_line(aes(y = Bayes, color = "Bayesian"))+
+  geom_line(aes(y = Mean, color = "Data mean"))+
+  scale_color_manual(values = col_vec,
+                     breaks = c("Bayesian", "Max likelihood", "Data mean")
+                       )+
+  labs(color = "")+
+  theme(
+    legend.position = c(0.7, 0.2),
+    legend.justification = c(0.5, 0.5),
+    legend.background = element_rect(fill = "transparent"),
+    legend.spacing.y = unit(-0.7, "cm"),
+    panel.grid.major = element_line(linewidth = 1))
+
+ggModelCurves
+
+```
+
+
+# Mahalanobis
+
+
+```{r}
+## Bayes
+# Alle
+sqmaha_dist_all_b <- apply(exposter$st_resid, 1, \(x){
+    t(c(x))%*%c(x)
+})
+
+
+sqmaha_dist_build_b <- apply(
+    exposter$st_resid^2,
+    1:2, sum
+  )
+
+
+sqmaha_dist_build_b <- tidyr::pivot_longer(data.frame(sqmaha_dist_build_b), 1:27,
+                         names_to = "Building",
+                         values_to = "SQMahalanobis")
+
+sqmaha_dist_build_b$Building <- ordered(rep(1:27, 4000), 1:27)
+sqmaha_dist_build_b$Method <- "Bayesian"
+
+```
+
+```{r}
+# ML
+sqmaha_dist_all_c <- apply(bs_st_resid, 1, \(x){
+    t(c(x))%*%c(x)
+})
+
+
+
+sqmaha_dist_build_c <- apply(
+    bs_st_resid^2,
+    1:2, sum
+  )
+
+sqmaha_dist_build_c <- tidyr::pivot_longer(data.frame(sqmaha_dist_build_c), 1:27,
+                         names_to = "Building",
+                         values_to = "SQMahalanobis")
+
+
+sqmaha_dist_build_c$Building <- ordered(rep(1:27, 1000), 1:27)
+sqmaha_dist_build_c$Method <- "Frequentist"
+
+
+```
+
+
+```{r}
+maha_all_df <- data.frame(
+  sq_maha = c(sqmaha_dist_all_b, sqmaha_dist_all_c, rchisq(3000, 21*numb_curves)),
+  Method = c(rep("Bayesian", 4000), rep("Frequentist", 1000), rep("Chi", 3000))
+)
+
+
+maha_all_df$Method <- factor(maha_all_df$Method, 
+                    levels = c("Bayesian", "Frequentist", "Chi"))
+
+ggplot(maha_all_df)+
+  aes(x = Method, y = sqrt(sq_maha), fill = Method)+
+  geom_boxplot()+
+  scale_fill_manual(breaks = c("Bayesian", "Frequentist", "Chi"), values = c(col_vec, "grey"))+
+  labs(y = "Mahalanobis distance")+
+  theme(legend.position = "none")
+
+
+
+```
+```{r}
+# sqmaha_chi <- data.frame(
+#   "Building" = 0,
+#   "SQMahalanobis" = rchisq(3000,21),
+#   "Method" = "Chi"
+# )
+
+sqmaha_dist_build <- rbind(sqmaha_dist_build_b, sqmaha_dist_build_c)#,sqmaha_chi)
+# sqmaha_dist_build$Method <- factor(sqmaha_dist_build$Method, 
+#                     levels = c("Bayesian", "Frequentist", "Chi"))
+
+ggplot(sqmaha_dist_build)+
+  aes(x = Building, y = sqrt(SQMahalanobis ), fill = Method)+
+  geom_boxplot()+
+  scale_fill_manual(values = col_vec)+
+  labs(y = "Mahalanobis distance")+
+  theme(legend.position = "bottom")
+
+```
+
+```{r}
+ggplot(sqmaha_dist_build) +
+  aes(x = sqrt(SQMahalanobis), y = Building, fill = Method)+
+    geom_density_ridges2(alpha = 1/3) +
+    theme(axis.text.x = element_text(size = 15),
+          axis.title = element_text(size = 15),
+          panel.grid.major = element_line(linewidth = 1))+
+  labs(x = "Mahalanobis distance",
+       y = "Building")+
+  theme(legend.position = "bottom")+
+  scale_fill_manual(values = col_vec)
+```
+
+
+
+# Fit parameter
+
+```{r}
+
+bs_coefs$Method <- "Bootstrapping"
+
+mcmc_coefs <- data.frame(exposter[1:4])
+
+mcmc_coefs$Method <- "MCMC"
+
+sample_coef_df <- rbind(bs_coefs,mcmc_coefs )
+
+
+
+```
+
+```{r}
+
+
+sample_coef_df$Method <- factor(sample_coef_df$Method,
+                                levels = c("MCMC","Bootstrapping"))
+
+gg_kernel <- ggplot(sample_coef_df, aes(x= Method, fill = Method))
+
+# eta_int
+gg_ei <- gg_kernel+
+  aes(y=eta_int)+
+  geom_flat_violin(position = position_nudge(x = 0),
+                   alpha = 0.7) +
+  geom_boxplot(width = 0.1) +
+  labs(y = bquote(eta["int"]))+
+  theme(legend.position = "none")+
+  scale_fill_manual(values = col_vec,
+                    breaks = c("MCMC", "Bootstrapping"))+
+  coord_cartesian(ylim = c(5/1000,0.045))
+
+# C
+gg_C <- gg_kernel+
+  aes(y=C)+
+  geom_flat_violin(position = position_nudge(x = 0),
+                   alpha = 0.7) +
+  geom_boxplot(width = 0.1) +
+  labs(y = "C")+
+  theme(legend.position = "none")+
+  scale_fill_manual(values = col_vec,
+                    breaks = c("MCMC", "Bootstrapping"))
+
+# cL
+gg_cL <- gg_kernel + aes(y=cL)+
+  geom_flat_violin(position = position_nudge(x = 0),
+                   alpha = 0.7) +
+  geom_boxplot(width = 0.1) +
+  coord_cartesian(ylim = c(900,1150))+
+  labs(y = "cL / m/s")+
+  theme(legend.position = "none") +
+  scale_fill_manual(values = col_vec,
+                    breaks = c("MCMC", "Bootstrapping"))
+
+# gamma
+gg_gamma <- gg_kernel + aes(y=gamma)+
+  geom_flat_violin(position = position_nudge(x = 0),
+                   alpha = 0.7) +
+  geom_boxplot(width = 0.1) +
+  labs(y = bquote(gamma))+
+  theme(legend.position = "none") +
+  scale_fill_manual(values = col_vec,
+                    breaks = c("MCMC", "Bootstrapping"))
+
+# Alle
+
+ggarrange(gg_ei, gg_C, gg_cL, gg_gamma)
+
+
+```
+
+
+# Standard deviation
+
+```{r}
+quantiles <- c(0.025, 0.5, 0.975)
+```
+
+
+```{r}
+# Classic
+stdev_classic <- sapply(bs_fits, \(x){
+  cov <- x$cov_matrix
+  sqrt(diag(cov))
+})
+stdev_classic <- t(stdev_classic)
+
+stdev_c_quant <- apply(stdev_classic, 2, quantile, probs = quantiles)
+
+stdev_c_df <- data.frame(
+  t(stdev_c_quant),
+  fpHz = freq,
+  Method = "Bootstrapping"
+)
+names(stdev_c_df)[1:3] <- paste("q", c(2.5,50,97.5), sep = "")
+
+
+
+# Bayes
+# var_list_bayes <- apply(exposter$cov_mat, 1, diag, simplify = F)
+# stdev_bayes <- sapply(var_list_bayes, sqrt)
+# stdev_bayes <- t(stdev_bayes)
+
+stdev_bayes <- exposter$unconditional_st_dev
+
+
+stdev_b_quant <- apply(stdev_bayes, 2, quantile, probs = quantiles)
+
+stdev_b_df <- data.frame(
+  t(stdev_b_quant),
+  fpHz = freq,
+  Method = "MCMC"
+)
+names(stdev_b_df)[1:3] <- paste("q", c(2.5,50,97.5), sep = "")
+
+
+# Kombiniert
+stdev_df <- rbind(stdev_b_df, stdev_c_df)
+```
+
+
+```{r}
+
+stdev_df$Method <- factor(stdev_df$Method,
+                                levels = c("MCMC","Bootstrapping"))
+
+ggplot(stdev_df)+
+  aes(x = fpHz, group = Method, fill = Method, color = Method)+
+  geom_line(aes(y = q50))+
+  geom_ribbon(aes(ymin = q2.5, ymax = q97.5), alpha = 1/4)+
+  scale_x_continuous(trans = log2_trans(),
+                       minor_breaks = c(freq,6300,8000,10000),
+                       breaks = c(63,125,250,500,1000,2000,4000,8000),
+                       labels = c(63,125,250,500,1000,2000,4000,8000),
+    )+
+  labs(y = "Standard deviation / dB",
+       x = "Frequency f / Hz")+
+  theme(legend.position = "bottom")+
+  scale_fill_manual(values = col_vec)
+
+
+```
+```{r}
+# Classic data.frame
+stdev_classic_df <- data.frame(stdev_classic)
+names(stdev_classic_df) <- freq
+stdev_classic_df_long <- tidyr::pivot_longer(stdev_classic_df,
+                                           1:21,
+                                           names_to = "fpHz",
+                                           values_to = "StDev")
+
+
+stdev_classic_df_long$Method <- "Frequentist"
+
+# Bayes data.frame
+stdev_bayes_df <- data.frame(stdev_bayes)
+names(stdev_bayes_df) <- freq
+stdev_bayes_df_long <- tidyr::pivot_longer(stdev_bayes_df,
+                                           1:21,
+                                           names_to = "fpHz",
+                                           values_to = "StDev")
+stdev_bayes_df_long$Method <- "Bayesian"
+# Combine
+
+
+stdev_water_df <- rbind(stdev_bayes_df_long,stdev_classic_df_long)
+
+stdev_water_df$fpHz <- ordered(stdev_water_df$fpHz, as.factor(freq))
+
+```
+
+```{r}
+ggplot(stdev_water_df) +
+  aes(x = log2(StDev), y = fpHz, fill = Method)+
+    geom_density_ridges2(alpha = 1/3) +
+    theme(axis.text.x = element_text(size = 15),
+          axis.title = element_text(size = 15),
+          panel.grid.major = element_line(linewidth = 1))+
+  labs(x = bquote(log[2]~standard~deviation),
+       y = "Frequency f / Hz")+
+  theme(legend.position = "bottom")+
+  scale_fill_manual(values = col_vec)
+```
+
+
+# AR coefficients
+
+
+
+
+```{r}
+# Classic
+arcoff_classic <- sapply(bs_fits, \(x){
+  cov <- x$cov_matrix
+  ar_mat <- tvARcov2coeff(cov)
+  res <- c()
+  for (i in 1:20) {
+    res[i] <- ar_mat[i+1,i]
+  }
+  res
+})
+arcoff_classic <- t(arcoff_classic)
+
+c_quant <- apply(arcoff_classic, 2, quantile, probs = quantiles)
+
+ar_c_df <- data.frame(
+  t(c_quant),
+  fpHz = freq[-1],
+  Method = "Bootstrapping"
+)
+names(ar_c_df)[1:3] <- paste("q", quantiles*100, sep = "")
+
+
+
+# Bayes
+arcoeff_bayes <- exposter$shift_coeff
+
+
+b_quant <- apply(arcoeff_bayes, 2, quantile, probs = quantiles)
+
+ar_b_df <- data.frame(
+  t(b_quant),
+  fpHz = freq[-1],
+  Method = "MCMC"
+)
+names(ar_b_df)[1:3] <- paste("q", quantiles*100, sep = "")
+
+
+# Kombiniert
+ar_df <- rbind(ar_b_df, ar_c_df)
+```
+
+
+```{r}
+
+
+ar_df$Method <- factor(ar_df$Method,
+                                levels = c("MCMC","Bootstrapping"))
+
+ggplot(ar_df)+
+  aes(x = fpHz, group = Method, fill = Method, color = Method)+
+  geom_line(aes(y = q50))+
+  geom_ribbon(aes(ymin = q2.5, ymax = q97.5), alpha = 1/4)+
+  scale_x_continuous(trans = log2_trans(),
+                       minor_breaks = c(freq,6300,8000,10000),
+                       breaks = c(63,125,250,500,1000,2000,4000,8000),
+                       labels = c(63,125,250,500,1000,2000,4000,8000),
+    )+
+  labs(y = "AR coefficient",
+       x = "Frequency f / Hz")+
+  theme(legend.position = "bottom")+
+  scale_fill_manual(values = col_vec)
+
+
+```
+
+
+Waterfall:
+
+```{r}
+# Classic data.frame
+ar_classic_df <- data.frame(arcoff_classic)
+names(ar_classic_df) <- freq[-1]
+ar_classic_df <- tidyr::pivot_longer(ar_classic_df,
+                                           1:20,
+                                           names_to = "fpHz",
+                                           values_to = "AR")
+
+
+ar_classic_df$Method <- "Frequentist"
+
+# Bayes data.frame
+ar_bayes_df <- data.frame(arcoeff_bayes)
+names(ar_bayes_df) <- freq[-1]
+ar_bayes_df <- tidyr::pivot_longer(ar_bayes_df,
+                                           1:20,
+                                           names_to = "fpHz",
+                                           values_to = "AR")
+ar_bayes_df$Method <- "Bayesian"
+# Combine
+
+
+ar_water_df <- rbind(ar_bayes_df,ar_classic_df)
+
+ar_water_df$fpHz <- ordered(ar_water_df$fpHz, as.factor(freq[-1]))
+
+```
+
+```{r}
+ggplot(ar_water_df) +
+  aes(x = AR, y = fpHz, fill = Method)+
+    geom_density_ridges2(alpha = 1/3) +
+    theme(axis.text.x = element_text(size = 15),
+          axis.title = element_text(size = 15),
+          panel.grid.major = element_line(linewidth = 1))+
+  labs(x = "AR coefficient",
+       y = "Frequency f / Hz")+
+  theme(legend.position = "bottom")+
+  scale_fill_manual(values = col_vec)
+```
+
+
+
+# Correlation
+
+```{r}
+
+corr_freq <- cov2cor(f_model$cov[[3]])
+corr_bayes <- apply(exposter$cov_mat, 1, cov2cor, simplify = F)
+corr_bayes <- abind(corr_bayes, rev.along = 3)
+mean_corr_b <- apply(corr_bayes, 2:3, mean)
+
+
+corr_comp <- corr_freq*lower.tri(diag(21), diag = TRUE) + mean_corr_b*t(lower.tri(diag(21)))
+colnames(corr_comp) <- row.names(corr_comp) <- paste("f", freq)
+
+
+
+```
+
+```{r}
+corrplot::corrplot(corr_comp, "color", tl.col = "black",
+                   title = "L = Frequentist & U = Bayesian",
+                   mar = c(0,0,1,0))
+
+corr_diff <- corr_freq - mean_corr_b
+colnames(corr_diff) <- row.names(corr_diff) <- paste("f", freq)
+
+corrplot::corrplot(corr_diff, tl.col = "black",
+                   is.corr = F,
+                   title = "Frequentist - Bayesian",
+                   mar = c(0,0,1,0))
+```
+
+
+
+```{r}
+
+alpha <- 0.05
+
+corr_lower <- apply(corr_bayes, 2:3, quantile, alpha/2)
+corr_upper <- apply(corr_bayes, 2:3, quantile, 1-alpha/2)
+
+cor_lower <- cov2cor(corr_lower)*lower.tri(diag(21), diag = TRUE)
+cor_upper <- cov2cor(corr_upper)*lower.tri(diag(21))
+
+cor_range <- cor_lower+t(cor_upper)
+
+colnames(cor_range) <- row.names(cor_range) <- paste("f", freq)
+
+
+
+
+```
+
+
+
+```{r}
+
+bs_cov_mats <- lapply(bs_fits, \(x){
+  x$cov_matrix
+})
+
+bs_corr_mats <- lapply(bs_cov_mats, cov2cor)
+
+bs_corr_array <- abind::abind(bs_corr_mats, along = 0)
+
+alpha <- 0.05
+
+bs_corr_min <- apply(bs_corr_array, 2:3, quantile, alpha/2)*lower.tri(diag(21))
+bs_corr_max <- apply(bs_corr_array, 2:3, quantile, 1-alpha/2)*lower.tri(diag(21))
+
+bs_corr_range <- bs_corr_min+t(bs_corr_max)+diag(21)
+
+colnames(bs_corr_range) <- row.names(bs_corr_range) <- paste("f", freq)
+
+
+
+
+
+```
+
+```{r}
+
+#par(mfrow = c(1,2))
+
+
+corrplot::corrplot(
+  cor_range,
+  "color", tl.col = "black",
+  title = bquote("Bayesian range: L = 2.5 % & U = 97.5 %"),
+  mar = c(0,0,1,0)
+)
+
+
+corrplot::corrplot(
+  bs_corr_range,
+  "color", tl.col = "black",
+  title = bquote("Frequentist range: L = 2.5 % & U = 97.5 %"),
+  mar = c(0,0,1,0)
+)
+
+
+
+#par(mfrow = c(1,1))
+
+```
+
+# Rw Boxplots
+
+
+```{r}
+curves_bs_wall <- readRDS("ML/Saves/BS_sample_wall_thickness")
+rw_values_c <- apply(curves_bs_wall, 1:2, rw_value)
+rw_values_b <- t(readRDS("Bayes/Saves/RW_wall_samples"))
+```
+
+
+```{r}
+# Adjust frequentist
+rw_df_c <- data.frame(rw_values_c)
+rw_df_c <- tidyr::pivot_longer(rw_df_c,cols = names(rw_df_c),
+                                names_to = "Thickness", values_to = "Rw")
+rw_df_c$Thickness <- rep(c(18:36)/100, 1000)
+
+rw_df_c$Method <- "Bootstrapping"
+```
+
+```{r}
+# Adjust bayes
+rw_df_b <- data.frame(rw_values_b)
+rw_df_b <- tidyr::pivot_longer(rw_df_b,cols = names(rw_df_b),
+                                names_to = "Thickness", values_to = "Rw")
+rw_df_b$Thickness <- rep(c(18:36)/100, 4000)
+
+rw_df_b$Method <- "MCMC"
+```
+
+
+```{r}
+rw_df <- rbind(rw_df_c, rw_df_b)
+```
+
+```{r}
+
+rw_df$Method <- factor(rw_df$Method,
+                                levels = c("MCMC","Bootstrapping"))
+
+ggplot(rw_df)+
+  aes(x = factor(Thickness), y = Rw, fill = Method)+
+  geom_boxplot()+
+  labs(y = bquote(Weighted~sound~reduction~index~R[w]),
+       x = "Thickness in m")+
+  scale_fill_manual(values = col_vec)+
+  scale_y_continuous(
+    minor_breaks = seq(30,80,1),
+    breaks = seq(45,65,5),
+    labels = seq(45,65,5)
+  )+
+  theme(legend.position = "bottom",
+        panel.grid.major = element_line(linewidth  = 1))
+
+```
+
+
+
+
+
+# Rw probabilities
+
+
+
+```{r}
+rw_prob_b <- readRDS("Bayes/Saves/Rw_prop_df")
+rw_prob_c <- readRDS("ML/Saves/Rw_prop_df")
+
+rw_prob_b$Method <- "MCMC"
+rw_prob_c$Method <- "Bootstrapping"
+
+rw_prob <- rbind(rw_prob_b, rw_prob_c)
+rw_prob <- rw_prob[rw_prob$Rw >47 & rw_prob$Rw < 59,]
+rw_prob$Rw <- as.factor(rw_prob$Rw)
+```
+
+
+
+
+
+```{r}
+rw_prob$Method <- factor(rw_prob$Method,
+                                levels = c("MCMC","Bootstrapping"))
+
+gg_rw <- ggplot(rw_prob)+
+  aes(x = t, y = Prob,
+      linetype = Rw, shape = Rw,
+      color = Method,
+      group = interaction(Method, Rw))+
+  geom_line()+
+  geom_point()+
+  labs(y= bquote(Probability~of~italic(R)[w]>=~threshold),
+       color = "Method",
+       shape = "Threshold in dB",
+       linetype = "Threshold in dB",
+       x = "Thickness in m")+
+    scale_x_continuous(
+                       minor_breaks = (18:36)/100,
+                       breaks = seq(0.18,0.36,0.04),
+                       labels = seq(0.18,0.36,0.04))+
+    scale_y_continuous(
+        minor_breaks = c(0:100)/100,
+        breaks = seq(0,1, 0.05)
+    )+
+  theme(axis.text = element_text(size = 15),
+          axis.title = element_text(size = 15),
+          plot.title = element_text(size = 15),
+          legend.text = element_text(size = 15),
+          panel.grid.major = element_line(linewidth = 1),
+          axis.text.x = element_text(angle =0, hjust = 1),
+        legend.position = "bottom")+
+  scale_color_manual(values = col_vec)+
+  scale_linetype_manual(values = c("dotted", "solid", "dashed"))+
+  scale_shape_manual(values = c(15,16,17))
+
+gg_rw
+gg_rw+
+  coord_cartesian(ylim = c(0.75, 1))
+
+```
+
+
+
+
+# Bonus
+
+## Fit vs Residuals
+
+
+```{r}
+
+whitened_res_df <- data.frame(
+  "fpHz" = rep(freq, 27),
+  "fres" = f_model$m$resid(),
+  "bres" = c(t(apply(exposter$st_resid,2:3, mean))),
+  "ffit" = f_model$fitted,
+  "bfit" = c(t(apply(exposter$SRI,2:3, mean)))
+)
+
+
+fitvsres <- ggplot(whitened_res_df)+
+  geom_point(aes(x = ffit, y = fres, color = "Frequentist"))+
+  geom_point(aes(x = bfit, y = bres, color = "Bayesian"))+
+  labs(y = "Whitened residuals", x = "Model fit", color = "")+
+  scale_color_manual(values = col_vec)
+
+
+
+freqvsres <- gg_basic(whitened_res_df, aes(x = fpHz), sound = F, ymin = -3, ymax = 3)+
+  geom_point(aes( y = fres, color = "Frequentist"))+
+  geom_point(aes( y = bres, color = "Bayesian"))+
+  labs(y = "Whitened residuals", color = "")+
+  scale_color_manual(values = col_vec)
+  
+
+
+ggarrange(fitvsres, freqvsres, legend = "bottom", common.legend = T)
+
+
+
+```
+
+
+
+
+## Frequency vs Residuals (Boxplot)
+
+
+
+
+```{r}
+
+white_res_box <- data.frame(
+  "fpHz" = rep(whitened_res_df$fpHz, 2),
+  "Res" = c(whitened_res_df$fres, whitened_res_df$bres),
+  "Method" = rep(c("Max likelihood", "Bayesian"), each = 567)
+)
+
+
+
+ggWR <- ggWhiteRes(white_res_box, aes(x = as.factor(fpHz),
+                                      y = Res, fill = Method),
+                   numbVariants = 2, tikz = TRUE, txtsize = 3.25)+
+  labs(y = "Whitened residuals", x = expression(paste("Frequency ",
+                             italic(" f"), " / Hz")),
+       fill = "")+
+  # scale_x_discrete( minor_breaks = c(freq,6300,8000,10000),
+  #                      breaks = c(63,125,250,500,1000,2000,4000,8000),
+  #                      labels = c(63,125,250,500,1000,2000,4000,8000),
+  #   )+
+  scale_fill_manual(values = col_vec)+
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle =40, hjust = 1))
+
+
+ggWR
+
+```
+
+
+## PPC One-Third Ocatave Band
+
+
+
+```{r}
+
+alphas <- c(0.5,0.05,0.01)
+
+yRepQ <- apply(exposter$y_rep, 2:3, quantile,
+               probs = c(alphas/2, 1-alphas/2))
+
+yRepQdf <- data.frame(t(data.frame(yRepQ)))
+
+names(yRepQdf) <- c(
+  paste("L", 1:length(alphas), sep = ""),
+  paste("U", 1:length(alphas), sep = "")
+)
+
+
+ppcDF <- cbind(
+  sldf[order(sldf$fpHz),], yRepQdf
+)
+
+
+```
+
+
+
+
+```{r}
+ppc_freq <- gg_basic(ppcDF, aes(x = fpHz, group = Building, y = RpdB),
+         ymin = 10, ymax = 80)+
+  geom_point(aes(color = "Data"))+
+  geom_line(aes(color = "Data"),alpha = 0.3)+
+  geom_line(aes(y = L3, color = "99 p"), alpha = 0.1)+
+  geom_line(aes(y = U3, color = "99 p"), alpha = 0.1)+
+  geom_line(aes(y = L2, color = "95 p"), alpha = 0.1)+
+  geom_line(aes(y = U2, color = "95 p"), alpha = 0.1)+
+  geom_line(aes(y = L1, color = "50 p"), alpha = 0.1)+
+  geom_line(aes(y = U1, color = "50 p"), alpha = 0.1)+
+  scale_color_manual(
+    values = c("green", "blue", "orange", "black"),
+    guide = guide_legend(override.aes = list(alpha = 1)))+
+  #scale_fill_manual(values = c("lightgreen","lightblue","grey"))+
+    labs(color = "Predictive interval  ")
+    #theme(legend.position = "bottom")
+
+ppc_freq
+
+
+```
+
+
+```{r}
+mat1 <- OutOfRange(ppcDF, "RpdB", "L1", "U1", result = "matrix")
+mat2 <- OutOfRange(ppcDF, "RpdB", "L2", "U2", result = "matrix")
+mat3 <- OutOfRange(ppcDF, "RpdB", "L3", "U3", result = "matrix")
+
+
+expected <- 27*alphas
+
+
+oorBias1 <- apply(mat1, 2, sum) - expected[1]
+oorBias2 <- apply(mat2, 2, sum) - expected[2]
+oorBias3 <- apply(mat3, 2, sum) - expected[3]
+
+oorBias1sd <- oorBias1/sqrt(27*alphas[1]*(1-alphas[1]))
+oorBias2sd <- oorBias2/sqrt(27*alphas[2]*(1-alphas[2]))
+oorBias3sd <- oorBias3/sqrt(27*alphas[3]*(1-alphas[3]))
+
+
+prfct <- function(ex, diff, prop){
+   (1-pbinom(ex+diff,27,prop)+ pbinom(ex-diff,27,prop))
+}
+
+
+prob1 <- prfct(expected[1], diff = abs(oorBias1), alphas[1])
+prob2 <- prfct(expected[2], diff = abs(oorBias2), alphas[2])
+prob3 <- prfct(expected[3], diff = abs(oorBias3), alphas[3])
+
+
+
+oorDf <- data.frame(
+  "fpHz" = rep(freq, 3),
+  "OORbias" = c(oorBias1,oorBias2,oorBias3),
+  "OORbiasSd" = c(oorBias1sd,oorBias2sd,oorBias3sd),
+  "alpha" = paste(rep(1-alphas, each = 21), "p"),
+  "probs" = c(prob1,prob2,prob3)
+)
+
+
+
+
+
+ggplot(oorDf)+
+  aes(x = fpHz, y = OORbias, color = alpha)+
+  geom_point()+
+  geom_line()+
+  scale_x_continuous(trans = log2_trans(),
+                       minor_breaks = c(freq,6300,8000,10000),
+                       breaks = c(63,125,250,500,1000,2000,4000,8000),
+                       labels = c(63,125,250,500,1000,2000,4000,8000),
+    )+
+  scale_color_manual(
+    values = c("green", "blue", "orange"),
+    breaks = c("0.5 p", "0.95 p", "0.99 p"))+
+  labs(y = "OOR - Expected",
+       x = expression(paste("Frequency ",
+                             italic(" f"), " / Hz")),
+       color = "Predictive interval")+
+  theme(legend.position = "bottom")
+
+
+ppcFreqSt <- ggplot(oorDf)+
+  aes(x = fpHz, y = OORbiasSd, color = alpha)+
+  geom_point()+
+  geom_line()+
+  scale_x_continuous(trans = log2_trans(),
+                       minor_breaks = c(freq,6300,8000,10000),
+                       breaks = c(63,125,250,500,1000,2000,4000,8000),
+                       labels = c(63,125,250,500,1000,2000,4000,8000),
+    )+
+  scale_y_continuous(breaks = -3:3)+
+  scale_color_manual(
+    values = c("green", "blue", "orange"),
+    breaks = c("0.5 p", "0.95 p", "0.99 p"))+
+  labs(y = "(OOR - Expected) / Standard deviation",
+       x = expression(paste("Frequency ",
+                             italic(" f"), " / Hz")),
+       color = "Predictive interval  ")+
+  theme(legend.position = "bottom")+
+  coord_cartesian(ylim = c(-3,3))
+
+ppcFreqSt
+
+
+ppcFreqBinom <- ggplot(oorDf)+
+  aes(x = fpHz, y = probs, color = alpha)+
+  geom_point()+
+  geom_line(linetype = "dotted")+
+  scale_x_continuous(trans = log2_trans(),
+                       minor_breaks = c(freq,6300,8000,10000),
+                       breaks = c(63,125,250,500,1000,2000,4000,8000),
+                       labels = c(63,125,250,500,1000,2000,4000,8000),
+    )+
+  scale_color_manual(
+    values = c("green", "blue", "orange"),
+    breaks = c("0.5 p", "0.95 p", "0.99 p"))+
+  labs(y = "P(|Binominal - Expected| >= |OOR-Expected|)",
+       x = expression(paste("Frequency ",
+                             italic(" f"), " / Hz")),
+       color = "Predictive interval")+
+  theme(legend.position = "bottom")
+
+ppcFreqBinom
+
+
+```
+
+
+
+
+
+```{r}
+
+oor <- c()
+
+oor[1] <- OutOfRange(ppcDF, "RpdB", "L1", "U1", "sum")
+oor[2] <- OutOfRange(ppcDF, "RpdB", "L2", "U2", "sum")
+oor[3] <- OutOfRange(ppcDF, "RpdB", "L3", "U3", "sum")
+
+
+data.frame(
+  "Expected" = alphas*567,
+  "Out of range" = oor
+)
+
+
+
+```
+
+
+
+
+
+
+## PPC Whiteining TVAR Mahalanobis 
+
+
+```{r}
+
+# PPCwhiteSample <- apply(
+#   exposter$y_rep,
+#   1,
+#   whiteningTVAR,
+#   maxlag = 1
+# )
+# 
+# PPCwhiteSample <- t(PPCwhiteSample)
+# saveRDS(PPCwhiteSample, file = "Bayes/Saves/PPCwhite")
+
+PPCwhiteSample <- readRDS("Bayes/Saves/PPCwhite")
+
+
+
+```
+
+
+```{r}
+ntp_datamat <- matrix(sldf$RpdB, nrow = 27,byrow = T)
+
+ntp_datawhite <- whiteningTVAR(ntp_datamat, 1)
+
+```
+
+
+```{r}
+
+
+alphas <- c(0.5,0.05,0.01)
+
+sim_quant <- apply(
+  PPCwhiteSample, 2, quantile, probs = c(alphas/2, 1-alphas/2)
+)
+
+sim_quant <- data.frame(t(sim_quant))
+names(sim_quant) <- c(
+  paste("L", 1:length(alphas), sep = ""),
+  paste("U", 1:length(alphas), sep = "")
+)
+
+
+own_ribbon <- data.frame(
+  Ind = 1:27,
+  ydata = ntp_datawhite,
+  sim_mean = apply(PPCwhiteSample, 2, mean),
+  sim_quant
+)
+
+
+basis <- ggplot(own_ribbon)+
+    aes(x = Ind)+
+    geom_ribbon(aes(ymin = L3, ymax = U3, fill = "99 p"), alpha = 0.1)+
+    geom_ribbon(aes(ymin = L2, ymax = U2, fill = "95 p"), alpha = 0.2)+
+    geom_ribbon(aes(ymin = L1, ymax = U1, fill = "50 p"), alpha = 0.3)+
+    geom_line(aes(y = sim_mean, color = "PPC mean"))
+
+
+ppcWhite <- basis +
+    geom_point(aes(y = ydata, color = "Data"))+
+    geom_line(aes(y= ydata, color = "Data"))+
+    scale_fill_manual(values = rep("black", 3))+
+    scale_color_manual(values = c("blue", "black"))+
+    labs(color = "", fill = "Predictive interval",
+         x = "Wall", y = "Squared mahalanobis")+
+    theme(legend.position = "bottom")+
+  scale_x_continuous(breaks = seq(3,27,3),minor_breaks = 1:27)
+
+ppcWhite
+
+
+```
+
+
+
+```{r}
+
+inrangeWhite <- c()
+
+inrangeWhite[1] <- sum(own_ribbon$ydata >=own_ribbon$L1 & own_ribbon$ydata <=own_ribbon$U1)
+inrangeWhite[2] <- sum(own_ribbon$ydata >=own_ribbon$L2 & own_ribbon$ydata <=own_ribbon$U2)
+inrangeWhite[3] <- sum(own_ribbon$ydata >=own_ribbon$L3 & own_ribbon$ydata <=own_ribbon$U3)
+
+
+oor <- 27-inrangeWhite
+
+
+data.frame(
+  "Predictive interval" = alphas*27,
+  "Out of range" = oor,
+  "Standardized OOR" = (oor - alphas*27)/sqrt(27*alphas*(1-alphas))
+)
+
+
+
+```
+
+
+
+```{r}
+
+
+mahalanobisOutlier <- gg_basic(sldf_fit[is.element(sldf_fit$Building,c(16,13,20,5) ),], aes(x = fpHz, group = Building), ymin = 20, ymax = 80)+
+    geom_point(aes(y = RpdB, color = as.factor(Building)))+
+    geom_line(aes(y = RpdB, color = as.factor(Building)), alpha = 1/3)+
+    geom_line(aes(y = Mean, color = "Data mean"))+
+  scale_color_manual(values = c(RavenR::ggplotColours(4), "black" ))+
+  labs(color = "Wall")+
+  theme(
+    legend.position = c(0.7, 0.2),
+    legend.justification = c(0.5, 0.5),
+    legend.background = element_rect(fill = "transparent"),
+    legend.spacing.y = unit(-0.7, "cm"),
+    panel.grid.major = element_line(linewidth = 1))
+
+mahalanobisOutlier
+
+```
+
+
+
+
+
+## PPC Rw
+
+
+
+
+```{r}
+alphas <- c(0.5,0.05,0.01)
+
+#rwPPC <- apply(exposter$y_rep, 1:2, rw_value)
+#saveRDS(rwPPC, file = "Bayes/Saves/PPCrw")
+
+rwPPC <- readRDS("Bayes/Saves/PPCrw")
+
+rwPPCquantiles <- apply(
+  rwPPC, 2, quantile, probs = c(alphas/2, 1-alphas/2)
+)
+
+
+# hdi1 <- HDInterval::hdi(rwPPC, credMass  = 1-alphas[1])
+# hdi2 <- HDInterval::hdi(rwPPC, credMass  = 1-alphas[2])
+# hdi3 <- HDInterval::hdi(rwPPC, credMass  = 1-alphas[3])
+# hdi <- rbind(hdi1,hdi2,hdi3)
+# 
+# rwPPCquantiles <- hdi[c(1,3,5,2,4,6),]
+
+rwPPCquantiles <- data.frame(t(rwPPCquantiles))
+
+
+names(rwPPCquantiles) <- c(
+  paste("L", 1:length(alphas), sep = ""),
+  paste("U", 1:length(alphas), sep = "")
+)
+
+
+rwData <- apply(sl_list_stan$y, 1, rw_value)
+
+
+ownRibbonRw <- data.frame(
+  Ind = 1:27,
+  ydata = rwData,
+  sim_mean = apply(rwPPCquantiles, 1, mean),
+  rwPPCquantiles
+)
+
+
+```
+
+
+
+```{r}
+
+basis <- ggplot(ownRibbonRw)+
+    aes(x = Ind)+
+    geom_ribbon(aes(ymin = L3, ymax = U3, fill = "99 p"), alpha = 0.1)+
+    geom_ribbon(aes(ymin = L2, ymax = U2, fill = "95 p"), alpha = 0.2)+
+    geom_ribbon(aes(ymin = L1, ymax = U1, fill = "50 p"), alpha = 0.3)+
+    geom_line(aes(y = sim_mean, color = "PPC mean"))
+
+
+ppcRW <- basis +
+    geom_point(aes(y = ydata, color = "Data"))+
+    geom_line(aes(y= ydata, color = "Data"))+
+    scale_fill_manual(values = rep("black", 3))+
+    scale_color_manual(values = c("blue", "black"))+
+    labs(color = "", fill = "Predictive interval",
+         x = "Wall", y = bquote(Weighted~sound~reduction~index~R[w]))+
+    theme(legend.position = "bottom")+
+  scale_x_continuous(breaks = seq(3,27,3),minor_breaks = 1:27)
+
+ppcRW
+
+```
+
+
+
+```{r}
+
+inrangeRw <- c()
+
+inrangeRw[1] <- sum(ownRibbonRw$ydata >=ownRibbonRw$L1 & ownRibbonRw$ydata <=ownRibbonRw$U1)
+inrangeRw[2] <- sum(ownRibbonRw$ydata >=ownRibbonRw$L2 & ownRibbonRw$ydata <=ownRibbonRw$U2)
+inrangeRw[3] <- sum(ownRibbonRw$ydata >=ownRibbonRw$L3 & ownRibbonRw$ydata <=ownRibbonRw$U3)
+
+
+data.frame(
+  "Predictive interval" = 27*alphas,
+  "Out of range" = 27-inrangeRw
+)
+
+
+
+```
+
+
+
+
+
+## Simulated example data
+
+
+
+
+```{r}
+
+set.seed(26)
+
+
+public_data <- sldf
+
+
+y <- rmvnorm(1,
+             mean = f_model$fitted,
+             sigma = kronecker(diag(27),f_model$cov_matrix)
+             )
+
+public_data$RpdB <- y[1,]
+
+l1 <- runif(27, 3.2, 5.1)
+l2 <- runif(27, 2.5, 16/l1)
+
+public_data$s <- rep(l1*l2, each = 21)
+public_data$u <- rep(2*(l1+l2), each = 21)
+
+
+gg_basic(public_data, aes(x = fpHz, y = RpdB, group = Building))+
+  geom_point()+
+  geom_line(alpha = 1/3)
+
+
+# write.csv2(public_data, "publicDataSRI.csv", row.names = F)
+
+
+
+```
+
+
+
+
+
+
