@@ -50,7 +50,7 @@ Otherwise, you will need to update the file paths listed in this document!
 
 
 ```{r}
-# Lade Bayes Schätzungen
+# Load MCMC samples
 
 poster <- readRDS("Bayes/Saves/tvAR/STAN_FixMaxRL_tvAR_max_shift_1")
 exposter <- rstan::extract(poster)
@@ -58,7 +58,7 @@ exposter <- rstan::extract(poster)
 
 
 ```{r}
-# Erzeuge Freq Model
+# Create ML model
 formu_final <- RpdB ~ soundproofing_measure(
     eta_int, C, cL, 
     w_perimeter = u,
@@ -84,7 +84,7 @@ f_model <- nlsLMcov(formu_final,
 ```
 
 ```{r}
-# Lade Bootstrapp Ziehungen
+# Load bootstrapp samples
 bs_para_file <- paste("ML/Saves/BS_para_tvAR", 1,"_maxrlvalue_SpaceSaved", sep = "")
 
 bs_fits <- readRDS(bs_para_file)
@@ -94,7 +94,7 @@ bs_coefs <- as.data.frame(bs_coefs)
 ```
 
 ```{r}
-## Bootstrapp Residuen
+## Bootstrapp residuals
 # 
 bs_resid <- lapply(bs_fits, \(x){
   matrix(sldf$RpdB  - c(x$fitted), ncol = 21, byrow = T)
@@ -102,7 +102,7 @@ bs_resid <- lapply(bs_fits, \(x){
   #matrix(x$resid, ncol = 21, byrow = T)
 })
 bs_resid <- abind::abind(bs_resid, rev.along = 3)
-# Standardisiert
+# Standardize
 bs_st_resid <- lapply(bs_fits, \(x){
   cov <- x$cov_matrix
   weight <- solve(chol(cov))
@@ -324,7 +324,7 @@ gg_gamma <- gg_kernel + aes(y=gamma)+
   scale_fill_manual(values = col_vec,
                     breaks = c("MCMC", "Bootstrapping"))
 
-# Alle
+# All
 
 ggarrange(gg_ei, gg_C, gg_cL, gg_gamma)
 
@@ -376,7 +376,7 @@ stdev_b_df <- data.frame(
 names(stdev_b_df)[1:3] <- paste("q", c(2.5,50,97.5), sep = "")
 
 
-# Kombiniert
+# Combined
 stdev_df <- rbind(stdev_b_df, stdev_c_df)
 ```
 
@@ -488,7 +488,7 @@ ar_b_df <- data.frame(
 names(ar_b_df)[1:3] <- paste("q", quantiles*100, sep = "")
 
 
-# Kombiniert
+# Combined
 ar_df <- rbind(ar_b_df, ar_c_df)
 ```
 
